@@ -1,0 +1,255 @@
+---
+title: "Coursera Machine Learning Project"
+date: "14 April 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(fig.pos = 'H')
+knitr::opts_chunk$set(message = FALSE)
+knitr::opts_chunk$set(warning = FALSE)
+```
+
+
+## Executive Summary
+This report provides information on a machine learning project conducted as part of the Coursera Johns Hopkins Machine Learning data science course. The goal of the project was to develop a machine learning model that used data from several different on-body sensors to accurately categorise which of five types of dumbell lifting that six survey participants were undertaking. 
+
+Exploratory data analysis of the 159 descriptor variables in the dataset showed that approximately 100 variables had a large number of missing values.  The remaining variables were primarily numerical with few or no missing values, and analysis of correlations between variables showed that there was not significant scope for combining or removing variables.  Several variables relating to the date, time and 'window' that the measurements were taken were also removed from modelling because they had a close correlation to the predictor variable that is unlikely to be repeated in further experiments.  
+
+The course 'training' dataset that was provided consisted of almost 20,000 observations, and this was divided 50/50 into a training and testing sample.  Models were run using the Caret R package using a consistent training control set that involved the use of cross validation and multiple repeats to ensure the models did not overfit the results.  
+
+The resuls of the six models were compared and the Gradient Boosting Machine (GBM) and Random Forest (RF) models were stand-outs with highly accurate results (over 95% Accuracy and Kappa), although they were more computationally intensive than some other models. The GBM and RF models were the only two models to correctly predict all 20 results using the final test set provided.  
+
+
+### Sources of the data
+The data for this project was made available under the Creative Commons licencse (CC BY-SA) and is available at 
+http://groupware.les.inf.puc-rio.br/har.  A paper describing the data and their own analysis is available:
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+The training file and test file were provided by Coursera from the following links:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+
+## Step One - Load required packages
+The following packages in the code below were loaded for the project.
+```{r loadPackages, message=FALSE, echo = TRUE, results='hide'}
+## load the libraries required
+library(caret); library(lubridate);library(tabplot);library(skimr);library(corrplot);
+library(rpart);library(kernlab);library(tidyverse);
+```
+
+
+## Step Two - Load the data and prepare it for exploratory data analaysis
+The data was loaded from two files provided by Coursera.  
+
+The first was the training data available in the pml-training.csv file, which consisted of 160 variables and 19,622 observations. It was loaded into the dataframe orig_training_data.
+
+The second was the test data available in the pml-test.csv file, which consisted of 159 variables (it did not contain the 'Classe' predictor variable) and 20 observations.  
+
+The files were first loaded with the read_csv function using the default settings, but analysis of the data was then undertaken to identify which types of values were in each column.  The colTypesforTrainingData and colTypesforTestData character variables were created to specify the precise variable types to be created when the data was imported.  Most columns are imported as 'doubles'.
+
+Given the large size of the original training data and the very small size of the test set, the original training data was split in half using the caret 'createDataPartition' function to a 'training' set and a 'test' set that could be used to validate that the models weren't overfitted.  
+
+```{r load_data, echo = TRUE, messages=FALSE}
+colTypesforTrainingData <- paste("_ciicci", paste(rep("d", 152), collapse=""), "c", sep="")
+colTypesforTestData <- paste("_ciicci", paste(rep("d", 152), collapse=""), sep="")
+
+orig_training_data <- read_csv("pml-training.csv", col_types=colTypesforTrainingData) %>%
+    mutate(user_name = as.factor(user_name),
+           new_window = as.factor(new_window),
+           classe = as.factor(classe),
+           cvtd_timestamp = dmy_hm(cvtd_timestamp))
+           
+final_test_data <- read_csv("pml-testing.csv", col_types=colTypesforTestData) %>%
+    mutate(user_name = as.factor(user_name),
+           new_window = as.factor(new_window),
+           cvtd_timestamp = dmy_hm(cvtd_timestamp))
+
+set.seed(532343)
+inTrain = createDataPartition(orig_training_data$classe, p = 0.50, list=FALSE)
+training = orig_training_data[ inTrain,]
+testing = orig_training_data[-inTrain,]
+```
+
+
+## Step 3 - Data exploration
+The data in the training set was reviewed using three visualisation packages that work well with large datasets.  This was a very important step in the analysis, and took quite a lot of time, because it was critical to really understand the nature of the data and what types of relationships existed between the variables.  
+
+The first package was 'tabplot', which was used to review approximately 20-30 variables at a time to view the different amounts and types of data.  A plot is demonstrated in the code below, showing a plot for the first 6 columns, columns 18-19 and the 'classe' predictor column as an example. This type of plot was made multiple times so that every single variable could be reviewed at least once.  Analysing these plots created by this package showed that a number of columns had lots of missing data.
+
+The second package that was used was the 'Skim' package, and the function 'skim_to_wide' which creates a dataframe containing key information about each column, including the number of missing values, numbers of categories in factor variables, quantiles, means and medians for numeric values etc.  It helped confirm which of the variables contained large amounts of missing data. The code below shows a short glimpse at the data but it is better viewed using the View function in R Studio. 
+
+The final package that I used was the 'corrplot' package, which allowed me to visually see what type of correlations existed between variables.  Note that the 'numeric_vars_only' dataframe was created so that the the variables with NAs were not included in the analysis and the analysis could just focus on the key 55 numeric variables of interest.  The plot below shows the results of the corrplot and helped make clear that there weren't large numbers of correlations between the 55 numeric variables of interest.  This was useful to know when it came time to model the data.    
+
+```{r explore_data, echo = TRUE, messages=FALSE}
+## Example tableplot to give a visual representations of specific columns in the data.
+## Note how columns 'max_picth_belt' and 'max_yaw_belt' have lots of missing data, and this is 
+## reflected in many other columns in the data.  Plots like this were run for all columns during the data anlysis, usually with ## about 20 columns at a time.  
+tableplot(training[,c(1:6, 18,19, 159)], nBins=1000)
+
+## Skim view of data to better understand column types
+## Note that the command View(ViewOfTrainingData) was used in RStudio to analyse the entire summary dataframe.  
+ViewOfTrainingData <- skim_to_wide(training)
+print(ViewOfTrainingData,10)
+
+
+## The numeric_vars_only dataframe is created that contains only numeric variables with no missing values.  
+## The correlations between variables was then calculated and displayed using corrplot. 
+numeric_vars_only <- training %>%
+    select(which((lapply(.,class) %in% c("numeric", "integer")))) %>%
+    select_if(~!any(is.na(.)))
+
+training_correlations <- round(cor(numeric_vars_only, use="complete.obs"),2)
+diag(training_correlations) <- 0 ## No point showing correlations for variables with itself!
+training_correlations[is.na(training_correlations)] <- 0 ## Sets NA values to 0.
+corrplot(training_correlations, type="lower", tl.cex=0.8, cl.cex=0.9, pch.cex=0.9)
+
+```
+
+
+## Step 4 - Model selection and training 
+The target_training_vars dataframe was created that only contains the 55 columns identified in the data exploration that didn't contain NAs.  The timestamp variables and num-window variable were removed because of a concern that these variables appeared closely correlated with the predictor variable and this may not be evident in future data, resulting in overfitting.  
+
+The same control parameters for model training were set in the Ctrl variable. 3 resampling iterations and 5 complete sets of folds to compute to ensure the model wasn't overfitted but also to ensure the model training didn't take too long.  The random number seed was set before each model training to ensure they receive the same data partitions to assist with comparison. 
+
+Six major classification models were chosen for this project and trained on the training set:
+1.       Genearlised Boost Machine (GBM)
+2.       Random Forest (RF)
+3.       Support Vector Machine (SVM - SVMRadial was used)
+4.       Linear Discriminantn Analysis (LDA)
+5.       Recursive Partitioning and Regression Trees (RPart)
+6.       Neural Network (nnet)
+
+The results of the the four models that allowed variable importance to be calculated were then loaded into the dataframe 'comparison_of_variable_importance', and the median value for each variable was calculated.  The top variables identified were:
+1.       roll_belt - 100.0 (easily the most important variable for predicting)
+2.       yaw_belt - 48.9
+3.       magnet_dumbbell_y - 37.8
+4.       pitch_forearm - 37
+5.       magnet_dumbell_z - 36
+
+An obsevation of note is how closely correlated the GBM and RF variable importance calculations were. If more time was available, further refinement of the models may have taken place to determine whether the 55 variables being used in the models could be reduced to only the top 5 or 10 to make the models simpler and quicker to run.  
+
+```{r train_models, echo = TRUE, eval=FALSE, messages=FALSE}
+
+## Data exploration showed that only 55 columns were useful for model building so the target_training_vars
+## dataframe is created.  It doesn't contain any NA values and timestamp and num-window variables are 
+## removed because they apeared too closely correlated with the predictor variable, and my concern was that
+## the models would rely on these variables too much.  
+target_training_vars <- training %>%
+    dplyr::select_if(~!any(is.na(.))) %>%
+    dplyr::select(-cvtd_timestamp, -raw_timestamp_part_1, -raw_timestamp_part_2, -num_window)
+
+## The repeatedCV control was used for all methods, with 5 complete sets of folds and 3 resampling iterations.
+ctrl <- trainControl(method="repeatedcv", repeats = 5, number=3) 
+
+set.seed(222) ## The same seed was set for each model so they used the same control data to allow for comparison.
+gbmFit <- train(classe ~ ., method="gbm", metric="Accuracy", data=target_training_vars, 
+                preProc = c("center", "scale"), trControl=ctrl)
+set.seed(222)
+rfFit <- train(classe ~ ., method="rf", metric="Accuracy", data=target_training_vars, 
+               preProc = c("center", "scale"), trControl=ctrl)
+set.seed(222)
+rpartFit <- train(classe ~ ., method="rpart", metric="Accuracy", data=target_training_vars, 
+                  preProc = c("center", "scale"), trControl=ctrl)
+set.seed(222)
+nnetFit <- train(classe ~ ., method="nnet", metric="Accuracy", data=target_training_vars, 
+                 preProc = c("center", "scale"), trControl=ctrl)
+set.seed(222)
+svmRadialFit <- train(classe ~ ., method="svmRadial", metric="Accuracy", data=target_training_vars, 
+                      preProc = c("center", "scale"), trControl=ctrl)
+set.seed(222)
+ldaFit <- train(classe ~ ., method="lda", metric="Accuracy", data=target_training_vars, 
+                      preProc = c("center", "scale"), trControl=ctrl)
+
+## A dataframe was created so that the four models that allowed variable importance to be calculated
+## were able to be compared to identify which variables were important across models.    
+comparison_of_variable_importance <- as.data.frame((varImp(gbmFit))[[1]]) %>%
+    rownames_to_column(var="variable") %>%
+    dplyr::rename("gbm" = "Overall") %>%
+    dplyr::mutate("rf" = varImp(rfFit)[[1]]$Overall,
+           "rpart" = varImp(rpartFit)[[1]]$Overall,
+           "nnet" = varImp(nnetFit)[[1]][,1]) %>%
+    rowwise() %>%
+    dplyr::mutate("med" = median(c(gbm, rf, rpart, nnet))) %>%
+    arrange(desc(med))
+
+```
+
+
+## Step 6 - Comparing the Results of each model's performance against the test data and creating predictions.
+The results of each model were calculated using the training data and then the testing data, and the confusionMatrix function was run to calculate the key metrics for each model.  The RF and GBM models outperformed all the other models and had high levels of accuracy. Further information about the accuracy and error rate of the models is shown after the code below.  
+
+Finally the coursera test set predictions were calculated, and the only two models that correctly predicted the 20 test results were the GBM and RF results.   
+
+```{r examine_results, echo = TRUE, eval=FALSE, messages=FALSE}
+
+## Examine the accuracy of models on the training set.
+results_train_gbm <- predict(gbmFit, newdata=training)
+results_train_rf <- predict(rfFit, newdata=training)
+results_train_svm <- predict(svmRadialFit, newdata=training)
+results_train_nnet <- predict(nnetFit, newdata=training)
+results_train_lda <- predict(ldaFit, newdata=training)
+results_train_rpart <- predict(rpartFit, newdata=training)
+
+confusionMatrix(results_train_gbm, training$classe) 
+confusionMatrix(results_train_rf, training$classe) 
+confusionMatrix(results_train_svm, training$classe) 
+confusionMatrix(results_train_nnet, training$classe) 
+confusionMatrix(results_train_lda, training$classe) 
+confusionMatrix(results_train_rpart, training$classe) 
+
+
+## Examine the accuracy of the models on the test set.
+results_test_gbm <- predict(gbmFit, newdata=testing)
+results_test_rf <- predict(rfFit, newdata=testing)
+results_test_svm <- predict(svmRadialFit, newdata=testing)
+results_test_nnet <- predict(nnetFit, newdata=testing)
+results_test_lda <- predict(ldaFit, newdata=testing)
+results_test_rpart <- predict(rpartFit, newdata=testing)
+
+tester <- confusionMatrix(results_test_gbm, testing$classe) 
+confusionMatrix(results_test_rf, testing$classe) 
+confusionMatrix(results_test_svm, testing$classe) 
+confusionMatrix(results_test_nnet, testing$classe) 
+confusionMatrix(results_test_lda, testing$classe) 
+confusionMatrix(results_test_rpart, testing$classe)
+
+## Calculate the predictions of the models on the final test set.
+results_test_final_gbm <- predict(gbmFit, newdata=final_test_data)
+results_test_final_rf <- predict(rfFit, newdata=final_test_data)
+results_test_final_svm <- predict(svmRadialFit, newdata=final_test_data)
+results_test_final_nnet <- predict(nnetFit, newdata=final_test_data)
+results_test_final_lda <- predict(ldaFit, newdata=final_test_data)
+results_test_final_rpart <- predict(rpartFit, newdata=final_test_data)
+
+final_results_comparison_df <- data.frame("gbm"  = results_test_final_gbm,
+                                          "rf"   = results_test_final_rf,
+                                          "svm"  = results_test_final_svm,
+                                          "nnet" = results_test_final_nnet,
+                                          "lda"  = results_test_final_lda,
+                                          "rpart" = results_test_final_rpart)
+
+```
+
+### Plot showing the accuracy and kappa values of each model to allow us to determine sample error rate.
+As is clear in the plot below, the GBM and RF models had very high overall accuracy and kappa values. The kappa value was used because I've found it a very good metric for comparing each model's Observed Accuracy with an Expected Accuracy (see https://stats.stackexchange.com/questions/82162/cohens-kappa-in-plain-english for a really good explanation). 
+
+The RF model was the most accurate with an overall accuracy of 99% and a kappa value of 0.9874 when run on the large test set created during the data exploration.  The balanced accuracy of the RF model within each of the 5 classes was over 99% for 4 classes and 0.9889 for Class C.  Note that Balanced Accuracy = (sensitivity+specificity)/2. The 95% confidence interval for the overall accuracy of the RF model was 0.9878 - 0.9919, which means the expected out of sample error was <2% of predictions.    
+
+```{r plot_results, echo = TRUE, messages=FALSE}
+## Results summary and plotted. Note that results have been hardcoded in this dataframe
+## because of the amount of time it would take to compile the RMarkdown code with all the 
+## model training required!
+results_summarised <- data.frame("Model"=c("rf", "gbm", "svmradial", "lda", "nnet", "rpart"),
+                                 "Accuracy" = c(0.9900, 0.9628, 0.9137, 0.7325, 0.7168, 0.4951),
+                                 "Kappa" = c(0.9874, 0.9529, 0.8906, 0.6611, 0.6407, 0.3402)) %>%
+    gather(Accuracy:Kappa, key="Measure", value="Result")
+                                 
+ggplot(results_summarised, aes(Model, Result, fill=Measure)) + geom_col(position="dodge") + 
+    scale_y_continuous(labels=scales::percent) + 
+    labs(title="Comparison of Test Set Accuracy and Kappa values for each model.")
+```
+
+
